@@ -1,0 +1,23 @@
+[package]
+name = "rust-hello-world"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+tempfile = "3.2"
+dirs = "4.0"
+log = "0.4"
+env_logger = "0.9"
+
+[dev-dependencies]
+cargo-script = "*"
+
+[[bin]]
+name = "rust-hello-world"
+path = "main.rs"
+
+[profile.dev]
+incremental = false
+
+[profile.release]
+incremental = false
