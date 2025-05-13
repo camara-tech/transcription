@@ -12,32 +12,29 @@ use std::path::Path;
 use std::process::Command;
 use dirs;
 use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
 
 struct FileManager;
 impl FileManager {
     fn extract_mp3_files(dir: &str) -> Vec<String> {
-        let mut mp3_files = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().and_then(|s| s.to_str().map(|s| s.to_lowercase())) == Some("mp3".to_string()) {
-                        if let Some(path_str) = path.to_str() {
-                            mp3_files.push(path_str.to_string());
-                        }
-                    } else if path.is_dir() {
-                        let sub_dir_mp3_files = FileManager::extract_mp3_files(path.to_str().unwrap());
-                        mp3_files.extend(sub_dir_mp3_files);
-                    }
+        fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .flat_map(|entry| {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str().map(|s| s.to_lowercase())) == Some("mp3".to_string()) {
+                    path.to_str().map(|s| vec![s.to_string()]).unwrap_or_default()
+                } else if path.is_dir() {
+                    FileManager::extract_mp3_files(path.to_str().unwrap())
+                } else {
+                    Vec::new()
                 }
-            }
-        }
-        mp3_files
+            })
+            .collect()
     }
 
     fn copy_transcription_files(transcription_files: Vec<String>, dest_dir: &str) {
-        for transcription_file in transcription_files {
+        transcription_files.into_iter().for_each(|transcription_file| {
             let dest_path = Path::new(dest_dir).join(
                 Path::new(&transcription_file)
                     .file_stem()
@@ -48,27 +45,26 @@ impl FileManager {
                     + ".md",
             );
             fs::copy(&transcription_file, &dest_path).expect("Failed to copy transcription file");
-        }
+        });
     }
 }
 
 struct TranscriptionManager;
 impl TranscriptionManager {
     fn get_transcribed_files(dest_dir: &str) -> HashSet<String> {
-        let mut transcribed_files = HashSet::new();
-        if let Ok(entries) = fs::read_dir(dest_dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().and_then(|s| s.to_str().map(|s| s.to_lowercase())) == Some("md".to_string()) {
-                        if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            transcribed_files.insert(file_stem.to_string());
-                        }
-                    }
+        fs::read_dir(dest_dir)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str().map(|s| s.to_lowercase())) == Some("md".to_string()) {
+                    path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+                } else {
+                    None
                 }
-            }
-        }
-        transcribed_files
+            })
+            .collect()
     }
 
     fn filter_untranscribed_files(mp3_files: Vec<String>, transcribed_files: &HashSet<String>) -> Vec<String> {
@@ -79,16 +75,13 @@ impl TranscriptionManager {
     }
 
     fn transcribe_mp3_files(mp3_files: Vec<String>) -> Vec<String> {
-        let mut transcription_files = Vec::new();
-        
-        // Create the transcriptions directory if it doesn't exist
         let transcriptions_dir = dirs::document_dir()
             .expect("Failed to get document directory")
             .join("aTrain/transcriptions");
         fs::create_dir_all(&transcriptions_dir)
             .expect("Failed to create transcriptions directory");
 
-        for mp3_file in mp3_files {
+        mp3_files.into_iter().filter_map(|mp3_file| {
             println!("Transcribing file: {}", mp3_file); // Debug print
             let output = Command::new("aTrain_core")
                 .arg("transcribe")
@@ -100,14 +93,12 @@ impl TranscriptionManager {
             if !output.stdout.is_empty() {
                 println!("Output: {}", String::from_utf8_lossy(&output.stdout)); // Debug print
             }
-
             if !output.stderr.is_empty() {
                 println!("Error: {}", String::from_utf8_lossy(&output.stderr)); // Debug print
             }
 
             if output.status.success() {
                 println!("Command succeeded"); // Debug print
-                // Get the filename without path for the destination
                 let file_name = Path::new(&mp3_file)
                     .file_stem()
                     .unwrap()
@@ -119,34 +110,30 @@ impl TranscriptionManager {
                     if let Some(latest_folder) = entries
                         .filter_map(|entry| entry.ok())
                         .filter(|entry| entry.path().is_dir())
-                        .max_by_key(|entry| entry.metadata().unwrap().modified().unwrap()) 
+                        .max_by_key(|entry| entry.metadata().unwrap().modified().unwrap())
                     {
                         let latest_folder_path = latest_folder.path();
                         let metadata_file = latest_folder_path.join("metadata.txt");
-                        
                         if metadata_file.exists() {
                             println!("Metadata file exists"); // Debug print
                             if let Ok(content) = fs::read_to_string(&metadata_file) {
-                                for line in content.lines() {
-                                    if line.starts_with("path_to_audio_file:") {
-                                        let path = line.split(':').nth(1).unwrap().trim().to_string();
-                                        if path == mp3_file {
-                                            let transcription_file = latest_folder_path.join("transcription.txt");
-                                            if transcription_file.exists() {
-                                                println!("Transcription file exists"); // Debug print
-                                                println!("Checking directory: {:?}", latest_folder_path); // Debug print
-                                                for entry in fs::read_dir(&latest_folder_path).unwrap() {
-                                                    let entry = entry.unwrap();
-                                                    println!("Found entry: {:?}", entry.path()); // Debug print
-                                                }
-                                                let dest_file = transcriptions_dir.join(&file_name);
-                                                println!("Copying transcription file from {:?} to {:?}", transcription_file, dest_file); // Debug print
-                                                fs::copy(&transcription_file, &dest_file)
-                                                    .expect("Failed to copy transcription file");
-                                                transcription_files.push(dest_file.to_str().unwrap().to_string());
-                                                break;
-                                            }
+                                if content.lines().any(|line| {
+                                    line.starts_with("path_to_audio_file:") &&
+                                    line.split(':').nth(1).map(|p| p.trim().to_string()) == Some(mp3_file.clone())
+                                }) {
+                                    let transcription_file = latest_folder_path.join("transcription.txt");
+                                    if transcription_file.exists() {
+                                        println!("Transcription file exists"); // Debug print
+                                        println!("Checking directory: {:?}", latest_folder_path); // Debug print
+                                        for entry in fs::read_dir(&latest_folder_path).unwrap() {
+                                            let entry = entry.unwrap();
+                                            println!("Found entry: {:?}", entry.path()); // Debug print
                                         }
+                                        let dest_file = transcriptions_dir.join(&file_name);
+                                        println!("Copying transcription file from {:?} to {:?}", transcription_file, dest_file); // Debug print
+                                        fs::copy(&transcription_file, &dest_file)
+                                            .expect("Failed to copy transcription file");
+                                        return Some(dest_file.to_str().unwrap().to_string());
                                     }
                                 }
                             }
@@ -156,8 +143,8 @@ impl TranscriptionManager {
             } else {
                 println!("Failed to transcribe file: {}", mp3_file); // Debug print
             }
-        }
-        transcription_files
+            None
+        }).collect()
     }
 }
 
